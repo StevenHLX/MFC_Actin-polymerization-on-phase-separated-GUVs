@@ -1,0 +1,160 @@
+%% Initialization
+clc;          % 清空命令窗口
+clear;        % 清除工作区变量
+close all;    % 关闭所有图形窗口
+
+%% File Pathway
+folder_path = pwd;
+
+% Load all image files
+image_files = dir(fullfile(folder_path, "*.jpg"));
+
+% Initialize database matrix
+database = cell(length(image_files), 4); % 4列
+
+%% Perform analysis for each image
+for i = 1:length(image_files)
+    img_path = fullfile(folder_path, image_files(i).name); % 获取当前图像文件的路径
+    img = imread(img_path); % 正确读取图像
+    
+    % Select Region of interest (ROI)
+    figure;
+    imshow(img);
+    title('选取感兴趣的区域 (ROI) - 单击并拖拽鼠标');
+    
+    % 创建一个交互式的矩形选取工具
+    h = imrect(gca, [1 1 100 100]); % 初始化位置和大小（可以根据需要调整）
+    
+    % 等待用户确认选取的 ROI
+    setPosition(h, wait(h)); % 此函数会阻塞，直到用户双击确认选取的 ROI
+    
+    % 获取选取的 ROI 的位置和大小
+    roi_position = getPosition(h);
+    
+    % 裁剪原始图像到选取的 ROI
+    roi_img = imcrop(img, roi_position);
+    
+    % 关闭原始图像的显示
+    close(gcf);
+    
+    % RGB detection
+    % Ensure the image is in color (RGB)
+    if size(roi_img, 3) ~= 3
+        error('The image must be an RGB image.');
+    end
+    
+    % Extract the RGB channels, which corresponds to the lipids and protein
+    redChannel = roi_img(:, :, 1);
+    greenChannel = roi_img(:, :, 2);
+    
+    % Determine the size of the image
+    [rows, cols, ~] = size(roi_img);
+    
+    % Manual Selection of Lipid Center of Mass
+    % Display the cropped ROI image for manual selection
+    figure;
+    imshow(roi_img);
+    title('Click on the Lipid Center of Mass');
+    
+    % Wait for mouse click
+    [center_of_mass_x, center_of_mass_y] = ginput(1);
+    
+    % Ensure the selected point is within the image boundaries
+    if center_of_mass_x < 1 || center_of_mass_x > cols ||...
+       center_of_mass_y < 1 || center_of_mass_y > rows
+        error('Selected point is outside the image boundaries.');
+    end
+    
+    % Store the selected point as the center of mass
+    center_of_mass = [center_of_mass_x, center_of_mass_y];
+    
+    % 关闭原始图像的显示
+    close(gcf);
+    
+    % Display the selected center of mass on the original image
+    figure;
+    imshow(roi_img);
+    hold on;
+    % Center of mass is plotted with a red plus sign
+    plot(center_of_mass(1), center_of_mass(2), 'r+', 'MarkerSize', 15);
+    hold off;
+    
+    % Fluorescence analysis
+    % Create an empty array to store the fluorescence intensity values
+    angles = 0:1:359;
+    red_intensities = zeros(size(angles));
+    green_intensities = zeros(size(angles));
+    
+    % Analyze the fluorescence intensities at each angle
+    for j = 1:length(angles)
+        % Define the angle in radians
+        angle_rad = deg2rad(angles(j));
+        
+        % Create a line (ray) from the center of mass at the specified angle
+        % Define the length of the ray (use the image diagonal for simplicity)
+        ray_length = hypot(rows, cols);
+        
+        % Sample points along the ray - create a vector of x and y coordinates
+        x_coords = center_of_mass(1) + (0:ray_length).* cos(angle_rad);
+        y_coords = center_of_mass(2) + (0:ray_length).* sin(angle_rad);
+        
+        % Ensure the coordinates are within the image boundaries
+        valid_indices = x_coords > 0 & x_coords <= cols & y_coords > 0 & y_coords <= rows;
+        x_coords = x_coords(valid_indices);
+        y_coords = y_coords(valid_indices);
+        
+        % Sample the fluorescence intensities along the ray
+        red_samples = interp2(double(redChannel), x_coords, y_coords, 'nearest', 0);
+        green_samples = interp2(double(greenChannel), x_coords, y_coords, 'nearest', 0);
+        
+        % 加入筛选条件：仅考虑 green_samples 中值大于 5 的样本
+        filtered_green_samples = green_samples(green_samples > 5);
+        
+        % 如果经过筛选后，仍有有效样本，则计算平均值
+        if ~isempty(filtered_green_samples)
+            green_intensities(j) = (2*max(filtered_green_samples)+mean(filtered_green_samples))/4;
+        else
+            % 如果所有样本均不满足条件（即全部≤5），则赋予一个特定值（例如NaN或0，根据您的需求）
+            green_intensities(j) = 0; % 或者 green_intensities(j) = 0;
+        end
+        
+        % Take the maximum intensity as the value for this angle (红色通道保持不变)
+        red_intensities(j) = max(red_samples);
+    end
+    
+    % Calculate the actin fluorescence behind NPF
+    % 找出 red_intensities_normalized 大于 0.2 的索引
+    indices_fluo = red_intensities > 0.2*(max(red_intensities)-min(red_intensities))+min(red_intensities);
+    indices_nonfluo = red_intensities <= 0.2*(max(red_intensities)-min(red_intensities))+min(red_intensities);
+    
+    % 使用这些索引提取对应的 green_intensities 值
+    fluo_green_intensities = green_intensities(indices_fluo);
+    nonfluo_green_intensities = green_intensities(indices_nonfluo);
+    
+    % 计算 selected_green_intensities 的平均值
+    average_fluo_green_intensity = mean(fluo_green_intensities);
+    average_nonfluo_green_intensity = mean(nonfluo_green_intensities);
+
+    % 提示当前图片分析完成
+    fprintf('Image %d analysis completed. Average fluo green intensity: %.4f\n', i, average_fluo_green_intensity);
+    fprintf('Image %d analysis completed. Average nonfluo green intensity: %.4f\n', i, average_nonfluo_green_intensity);
+    
+    % 弹出窗口输入字符串（Type）
+    prompt = '请输入Type（当前图像）：';
+    type_input = input(prompt, "s"); % 使用 '' 指定输入类型为字符串
+
+    % 更新database
+    database{i, 1} = {image_files(i).name(1:end-4)};  % 使用文件名（不包括扩展名）
+    database{i, 2} = {num2str(average_fluo_green_intensity)}; % 注意这里也改为{i, 2}，保持一致
+    database{i, 3} = {num2str(average_nonfluo_green_intensity)}; % 注意这里也改为{i, 2}，保持一致
+    database{i, 4} = {type_input}; % 记录输入的Type
+    
+    % 关闭所有图形窗口
+    close all;    
+    
+end
+
+%% 保存database到csv文件
+csv_file_name = 'All_Data.csv';
+table_database = cell2table(database, 'VariableNames', {'Identity', 'Average_Fluo_Green_Intensity','Average_nonFluo_Green_Intensity','Type'});
+writetable(table_database, csv_file_name);
